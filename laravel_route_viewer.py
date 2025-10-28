@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Laravel Route Viewer – List & Secure Laravel Routes
-Full standalone GUI application
-Author: DevSec Engineer | Date: 2025-11-07
+Full standalone GUI application with CLI support
+Author: T4Z4r | Date: 2025-11-07
 """
 
 import os
@@ -14,18 +14,24 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 import webbrowser
 from datetime import datetime
+import argparse
+import csv
+import sys
 
 class LaravelRouteViewer:
-    def __init__(self, root):
+    def __init__(self, root, dark_theme=False):
         self.root = root
         self.root.title("Laravel Route Viewer")
         self.root.geometry("1280x760")
         self.root.minsize(1000, 600)
-        self.root.configure(bg="#f5f5f5")
+        self.dark_theme = dark_theme
+        self.root.configure(bg="#f5f5f5" if not dark_theme else "#2b2b2b")
 
         self.app_path = tk.StringVar()
         self.routes_data = []
         self.findings = []
+        self.auto_refresh = False
+        self.refresh_interval = 30000  # 30 seconds
 
         self.setup_ui()
         self.create_reports_dir()
@@ -45,6 +51,14 @@ class LaravelRouteViewer:
         ttk.Button(header, text="View & Scan Routes", command=self.scan_routes, style="Accent.TButton").grid(row=0, column=3, padx=5)
         ttk.Button(header, text="Export Report", command=self.export_report).grid(row=0, column=4, padx=5)
 
+        # Dark theme toggle
+        self.theme_var = tk.BooleanVar(value=self.dark_theme)
+        ttk.Checkbutton(header, text="Dark Theme", variable=self.theme_var, command=self.toggle_theme).grid(row=0, column=5, padx=5)
+
+        # Auto-refresh toggle
+        self.auto_refresh_var = tk.BooleanVar(value=self.auto_refresh)
+        ttk.Checkbutton(header, text="Auto-refresh", variable=self.auto_refresh_var, command=self.toggle_auto_refresh).grid(row=0, column=6, padx=5)
+
         # === Notebook ===
         self.notebook = ttk.Notebook(self.root)
         self.tab_routes = ttk.Frame(self.notebook)
@@ -59,7 +73,9 @@ class LaravelRouteViewer:
         self.setup_routes_table()
 
         # === Report View ===
-        self.report_text = tk.Text(self.tab_report, wrap="word", font=("Consolas", 10), bg="white")
+        bg_color = "white" if not self.dark_theme else "#1e1e1e"
+        fg_color = "black" if not self.dark_theme else "#ffffff"
+        self.report_text = tk.Text(self.tab_report, wrap="word", font=("Consolas", 10), bg=bg_color, fg=fg_color)
         vsb = ttk.Scrollbar(self.tab_report, orient="vertical", command=self.report_text.yview)
         self.report_text.configure(yscrollcommand=vsb.set)
         self.report_text.grid(row=0, column=0, sticky="nsew")
@@ -73,8 +89,17 @@ class LaravelRouteViewer:
 
         # Style
         style = ttk.Style()
-        style.configure("Accent.TButton", foreground="white", background="#1976d2")
-        style.map("Accent.TButton", background=[("active", "#0d47a1")])
+        if self.dark_theme:
+            style.configure("Accent.TButton", foreground="white", background="#1976d2")
+            style.map("Accent.TButton", background=[("active", "#0d47a1")])
+            style.configure("TFrame", background="#2b2b2b")
+            style.configure("TLabel", background="#2b2b2b", foreground="#ffffff")
+            style.configure("TCheckbutton", background="#2b2b2b", foreground="#ffffff")
+            style.configure("Treeview", background="#1e1e1e", foreground="#ffffff", fieldbackground="#1e1e1e")
+            style.configure("Treeview.Heading", background="#3c3c3c", foreground="#ffffff")
+        else:
+            style.configure("Accent.TButton", foreground="white", background="#1976d2")
+            style.map("Accent.TButton", background=[("active", "#0d47a1")])
 
     def setup_routes_table(self):
         columns = ("risk", "method", "uri", "name", "action", "issue")
@@ -107,10 +132,16 @@ class LaravelRouteViewer:
         self.tab_routes.columnconfigure(0, weight=1)
 
         # Color tags
-        self.tree.tag_configure("high", background="#ffcdd2", foreground="#b71c1c")
-        self.tree.tag_configure("medium", background="#fff8e1", foreground="#ff8f00")
-        self.tree.tag_configure("low", background="#e8f5e9", foreground="#2e7d32")
-        self.tree.tag_configure("safe", foreground="#1b5e20")
+        if self.dark_theme:
+            self.tree.tag_configure("high", background="#4a2c2c", foreground="#ff6b6b")
+            self.tree.tag_configure("medium", background="#4a3c2c", foreground="#ffb74d")
+            self.tree.tag_configure("low", background="#2c4a2c", foreground="#81c784")
+            self.tree.tag_configure("safe", foreground="#4caf50")
+        else:
+            self.tree.tag_configure("high", background="#ffcdd2", foreground="#b71c1c")
+            self.tree.tag_configure("medium", background="#fff8e1", foreground="#ff8f00")
+            self.tree.tag_configure("low", background="#e8f5e9", foreground="#2e7d32")
+            self.tree.tag_configure("safe", foreground="#1b5e20")
 
     def browse_folder(self):
         folder = filedialog.askdirectory(title="Select Laravel Project Root")
@@ -215,6 +246,10 @@ class LaravelRouteViewer:
         # Regex patterns for Laravel route definitions
         import re
 
+        # Extract route group prefix if any
+        prefix_match = re.search(r"Route::prefix\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*->\s*group\s*\(\s*function\s*\(\s*\)\s*\{", content, re.IGNORECASE | re.DOTALL)
+        prefix = prefix_match.group(1) if prefix_match else ""
+
         # Match Route::method('uri', ...) patterns
         route_patterns = [
             r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,",
@@ -225,11 +260,21 @@ class LaravelRouteViewer:
             matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
             for match in matches:
                 method, uri = match
+                # Apply prefix if exists
+                full_uri = f"{prefix}/{uri}".lstrip('/') if prefix else uri
+
+                # Try to extract route name
+                name = ""
+                # Look for ->name('...') in the same line or nearby
+                name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content, re.IGNORECASE)
+                if name_match:
+                    name = name_match.group(1)
+
                 # Create a basic route dict similar to artisan output
                 route = {
                     "method": {"methods": [method.upper()]},
-                    "uri": uri,
-                    "name": "",
+                    "uri": full_uri,
+                    "name": name,
                     "action": "Closure",  # Default, could be improved
                     "middleware": []  # Default, could be improved
                 }
@@ -375,26 +420,453 @@ class LaravelRouteViewer:
         self.report_text.delete(1.0, tk.END)
         self.report_text.insert(tk.END, html)
 
+    def toggle_theme(self):
+        self.dark_theme = self.theme_var.get()
+        self.apply_theme()
+
+    def apply_theme(self):
+        bg_color = "#f5f5f5" if not self.dark_theme else "#2b2b2b"
+        self.root.configure(bg=bg_color)
+
+        # Update report text colors
+        bg_text = "white" if not self.dark_theme else "#1e1e1e"
+        fg_text = "black" if not self.dark_theme else "#ffffff"
+        self.report_text.configure(bg=bg_text, fg=fg_text)
+
+        # Update tree colors
+        if self.dark_theme:
+            self.tree.tag_configure("high", background="#4a2c2c", foreground="#ff6b6b")
+            self.tree.tag_configure("medium", background="#4a3c2c", foreground="#ffb74d")
+            self.tree.tag_configure("low", background="#2c4a2c", foreground="#81c784")
+            self.tree.tag_configure("safe", foreground="#4caf50")
+        else:
+            self.tree.tag_configure("high", background="#ffcdd2", foreground="#b71c1c")
+            self.tree.tag_configure("medium", background="#fff8e1", foreground="#ff8f00")
+            self.tree.tag_configure("low", background="#e8f5e9", foreground="#2e7d32")
+            self.tree.tag_configure("safe", foreground="#1b5e20")
+
+        # Force redraw
+        self.root.update_idletasks()
+
+    def toggle_auto_refresh(self):
+        self.auto_refresh = self.auto_refresh_var.get()
+        if self.auto_refresh:
+            self.schedule_refresh()
+        else:
+            if hasattr(self, 'refresh_job'):
+                self.root.after_cancel(self.refresh_job)
+
+    def schedule_refresh(self):
+        if self.auto_refresh and self.app_path.get().strip():
+            self.scan_routes()
+            self.refresh_job = self.root.after(self.refresh_interval, self.schedule_refresh)
+
     def export_report(self):
-        if not self.findings:
-            messagebox.showinfo("Clean", "No security issues found. Nothing to export.")
+        if not self.findings and not self.routes_data:
+            messagebox.showinfo("No Data", "No routes found. Nothing to export.")
             return
-        default_name = f"route-viewer-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
-        file = filedialog.asksaveasfilename(
-            initialfile=default_name,
-            defaultextension=".html",
-            filetypes=[("HTML Report", "*.html")],
-            title="Export Route Report"
-        )
-        if file:
-            with open(file, "w", encoding="utf-8") as f:
-                f.write(self.report_text.get(1.0, tk.END))
-            messagebox.showinfo("Success", f"Report saved!\n{file}")
-            webbrowser.open(file)
+
+        # Create export menu
+        export_window = tk.Toplevel(self.root)
+        export_window.title("Export Options")
+        export_window.geometry("300x200")
+        export_window.resizable(False, False)
+
+        ttk.Label(export_window, text="Choose export format:").pack(pady=10)
+
+        def export_html():
+            default_name = f"route-viewer-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
+            file = filedialog.asksaveasfilename(
+                initialfile=default_name,
+                defaultextension=".html",
+                filetypes=[("HTML Report", "*.html")],
+                title="Export HTML Report"
+            )
+            if file:
+                with open(file, "w", encoding="utf-8") as f:
+                    f.write(self.report_text.get(1.0, tk.END))
+                messagebox.showinfo("Success", f"HTML report saved!\n{file}")
+                webbrowser.open(file)
+            export_window.destroy()
+
+        def export_csv():
+            default_name = f"route-viewer-routes-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+            file = filedialog.asksaveasfilename(
+                initialfile=default_name,
+                defaultextension=".csv",
+                filetypes=[("CSV File", "*.csv")],
+                title="Export CSV"
+            )
+            if file:
+                self.export_to_csv(file)
+                messagebox.showinfo("Success", f"CSV exported!\n{file}")
+            export_window.destroy()
+
+        def export_json():
+            default_name = f"route-viewer-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+            file = filedialog.asksaveasfilename(
+                initialfile=default_name,
+                defaultextension=".json",
+                filetypes=[("JSON File", "*.json")],
+                title="Export JSON"
+            )
+            if file:
+                self.export_to_json(file)
+                messagebox.showinfo("Success", f"JSON exported!\n{file}")
+            export_window.destroy()
+
+        ttk.Button(export_window, text="HTML Report", command=export_html).pack(pady=5)
+        ttk.Button(export_window, text="CSV Export", command=export_csv).pack(pady=5)
+        ttk.Button(export_window, text="JSON Export", command=export_json).pack(pady=5)
+        ttk.Button(export_window, text="Cancel", command=export_window.destroy).pack(pady=10)
+
+
+    def export_to_csv(self, filename):
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['Risk', 'Method', 'URI', 'Name', 'Action', 'Security Issue']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            # Write findings
+            for f in self.findings:
+                risk_label = "HIGH" if f["severity"] == "high" else "MEDIUM" if f["severity"] == "medium" else "LOW"
+                writer.writerow({
+                    'Risk': risk_label,
+                    'Method': f['methods'],
+                    'URI': f['uri'],
+                    'Name': f['name'],
+                    'Action': f['action'],
+                    'Security Issue': f['issues']
+                })
+
+            # Write safe routes
+            risky_uris = {f["route"]["uri"]: True for f in self.findings}
+            for route in self.routes_data:
+                if route["uri"] not in risky_uris:
+                    methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
+                    action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
+                    writer.writerow({
+                        'Risk': 'OK',
+                        'Method': methods,
+                        'URI': route["uri"],
+                        'Name': route["name"] or "(none)",
+                        'Action': action,
+                        'Security Issue': '(secure)'
+                    })
+
+    def export_to_json(self, filename):
+        data = {
+            "project": self.app_path.get(),
+            "timestamp": datetime.now().isoformat(),
+            "total_routes": len(self.routes_data),
+            "findings_count": len(self.findings),
+            "routes": self.routes_data,
+            "findings": self.findings
+        }
+        with open(filename, 'w', encoding='utf-8') as jsonfile:
+            json.dump(data, jsonfile, indent=2, ensure_ascii=False)
+
+
+def cli_main():
+    parser = argparse.ArgumentParser(description="Laravel Route Viewer - CLI Mode")
+    parser.add_argument("path", help="Path to Laravel project")
+    parser.add_argument("-o", "--output", choices=["html", "csv", "json"], help="Output format")
+    parser.add_argument("-f", "--file", help="Output file path")
+    parser.add_argument("--scan-only", action="store_true", help="Only scan, don't show GUI")
+
+    args = parser.parse_args()
+
+    # Create a headless scanner
+    class CLIScanner:
+        def __init__(self, path):
+            self.app_path = path
+            self.routes_data = []
+            self.findings = []
+
+        def scan(self):
+            path = self.app_path
+            artisan_path = Path(path) / "artisan"
+            if not artisan_path.exists():
+                print(f"Error: 'artisan' not found in {path}")
+                return False
+
+            print("Fetching routes via php artisan route:list --json...")
+            try:
+                result = subprocess.run(
+                    ["php", "artisan", "route:list", "--json"],
+                    cwd=path,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False
+                )
+
+                if result.returncode != 0:
+                    print("Artisan failed, attempting manual crawl...")
+                    return self.manual_scan_routes(path)
+
+                self.routes_data = json.loads(result.stdout)
+                self.findings = self.analyze_routes(self.routes_data)
+                return True
+
+            except Exception as e:
+                print(f"Error: {e}")
+                return False
+
+        def manual_scan_routes(self, path):
+            print("Performing manual route crawl...")
+            routes_dir = Path(path) / "routes"
+            if not routes_dir.exists():
+                print("No 'routes' directory found.")
+                return False
+
+            self.routes_data = []
+            try:
+                for route_file in routes_dir.glob("*.php"):
+                    if route_file.is_file():
+                        self.parse_route_file(route_file)
+            except Exception as e:
+                print(f"Manual crawl error: {e}")
+                return False
+
+            if not self.routes_data:
+                print("No routes found.")
+                return False
+
+            self.findings = self.analyze_routes(self.routes_data)
+            return True
+
+        def parse_route_file(self, file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+                return
+
+            import re
+            prefix_match = re.search(r"Route::prefix\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*->\s*group\s*\(\s*function\s*\(\s*\)\s*\{", content, re.IGNORECASE | re.DOTALL)
+            prefix = prefix_match.group(1) if prefix_match else ""
+
+            route_patterns = [
+                r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,",
+                r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,.*?\)\s*;",
+            ]
+
+            for pattern in route_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    method, uri = match
+                    full_uri = f"{prefix}/{uri}".lstrip('/') if prefix else uri
+
+                    name = ""
+                    name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content, re.IGNORECASE)
+                    if name_match:
+                        name = name_match.group(1)
+
+                    route = {
+                        "method": {"methods": [method.upper()]},
+                        "uri": full_uri,
+                        "name": name,
+                        "action": "Closure",
+                        "middleware": []
+                    }
+                    self.routes_data.append(route)
+
+        def analyze_routes(self, routes):
+            findings = []
+            for route in routes:
+                uri = route.get("uri", "").strip()
+                methods = [m for m in route.get("method", {}).get("methods", []) if m != "HEAD"]
+                name = route.get("name", "") or "(none)"
+                action = route.get("action", "") or "Closure"
+                middleware = [m.lower() for m in route.get("middleware", [])]
+
+                issues = []
+                severity = "safe"
+
+                if any(m in ["POST", "PUT", "PATCH", "DELETE"] for m in methods):
+                    if "web" not in middleware and "csrf" not in " ".join(middleware):
+                        issues.append("CSRF protection missing (use web middleware)")
+                        severity = "high"
+
+                debug_paths = ["telescope", "horizon", "_ignition", "debugbar", "phpinfo"]
+                if any(p in uri.lower() for p in debug_paths):
+                    issues.append("Debug/tool endpoint exposed in production")
+                    severity = "high"
+
+                if uri.startswith("api/"):
+                    auth_missing = all(a not in " ".join(middleware) for a in ["auth", "sanctum", "jwt"])
+                    if auth_missing and any(m in ["POST", "PUT", "PATCH", "DELETE"] for m in methods):
+                        issues.append("Unauthenticated API write access")
+                        severity = "high"
+                    elif auth_missing and "GET" in methods:
+                        issues.append("Unauthenticated API read access")
+                        severity = "medium"
+
+                admin_keywords = ["admin", "panel", "dashboard", "cpanel"]
+                if any(k in uri.lower() for k in admin_keywords) and "auth" not in " ".join(middleware):
+                    issues.append("Admin route lacks authentication")
+                    severity = "high"
+
+                if "upload" in uri.lower() and "POST" in methods:
+                    issues.append("File upload – enforce MIME, size, and storage validation")
+                    severity = "medium"
+
+                if "Controller" in action and any(m in ["POST", "PUT"] for m in methods):
+                    issues.append("Potential mass assignment – use $fillable/$guarded")
+                    severity = "medium"
+
+                if issues:
+                    findings.append({
+                        "route": route,
+                        "methods": "|".join(methods),
+                        "uri": uri,
+                        "name": name,
+                        "action": action.replace("App\\", "", 1) if action.startswith("App\\") else action,
+                        "issues": "; ".join(issues),
+                        "severity": severity
+                    })
+
+            return findings
+
+        def export_html(self, filename):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            high = [f for f in self.findings if f["severity"] == "high"]
+            medium = [f for f in self.findings if f["severity"] == "medium"]
+
+            html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Laravel Route Viewer Report</title>
+    <style>
+        body {{ font-family: 'Segoe UI', sans-serif; margin: 40px; background: #f9f9f9; }}
+        h1 {{ color: #1976d2; }}
+        .summary {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .high {{ background: #ffcdd2; border-left: 6px solid #f44336; }}
+        .medium {{ background: #fff8e1; border-left: 6px solid #ff9800; }}
+        .card {{ padding: 15px; margin: 10px 0; border-radius: 6px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+        th {{ background: #f5f5f5; }}
+        .footer {{ margin-top: 50px; font-size: 0.9em; color: #666; }}
+    </style>
+</head>
+<body>
+    <h1>Laravel Route Viewer Report</h1>
+    <div class="summary">
+        <p><strong>Project:</strong> {self.app_path}</p>
+        <p><strong>Scanned:</strong> {len(self.routes_data)} routes</p>
+        <p><strong>Issues:</strong> {len(high)} High, {len(medium)} Medium</p>
+        <p><strong>Time:</strong> {timestamp}</p>
+    </div>
+
+    <h2>High Risk Findings</h2>
+"""
+            for f in high:
+                html += f"<div class='card high'><strong>{f['methods']} {f['uri']}</strong><br>{f['issues']}</div>"
+
+            html += "<h2>Medium Risk</h2>"
+            for f in medium:
+                html += f"<div class='card medium'><strong>{f['methods']} {f['uri']}</strong><br>{f['issues']}</div>"
+
+            html += "<h2>All Findings</h2><table><tr><th>Risk</th><th>Method</th><th>URI</th><th>Name</th><th>Action</th><th>Issue</th></tr>"
+            for f in self.findings:
+                risk = "HIGH" if f["severity"] == "high" else "MEDIUM"
+                html += f"<tr><td>{risk}</td><td>{f['methods']}</td><td>{f['uri']}</td><td>{f['name']}</td><td>{f['action']}</td><td>{f['issues']}</td></tr>"
+            html += "</table><div class='footer'>Generated by <strong>Laravel Route Viewer</strong></div></body></html>"
+
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(html)
+
+        def export_csv(self, filename):
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['Risk', 'Method', 'URI', 'Name', 'Action', 'Security Issue']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+
+                for f in self.findings:
+                    risk_label = "HIGH" if f["severity"] == "high" else "MEDIUM" if f["severity"] == "medium" else "LOW"
+                    writer.writerow({
+                        'Risk': risk_label,
+                        'Method': f['methods'],
+                        'URI': f['uri'],
+                        'Name': f['name'],
+                        'Action': f['action'],
+                        'Security Issue': f['issues']
+                    })
+
+                risky_uris = {f["route"]["uri"]: True for f in self.findings}
+                for route in self.routes_data:
+                    if route["uri"] not in risky_uris:
+                        methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
+                        action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
+                        writer.writerow({
+                            'Risk': 'OK',
+                            'Method': methods,
+                            'URI': route["uri"],
+                            'Name': route["name"] or "(none)",
+                            'Action': action,
+                            'Security Issue': '(secure)'
+                        })
+
+        def export_json(self, filename):
+            data = {
+                "project": self.app_path,
+                "timestamp": datetime.now().isoformat(),
+                "total_routes": len(self.routes_data),
+                "findings_count": len(self.findings),
+                "routes": self.routes_data,
+                "findings": self.findings
+            }
+            with open(filename, 'w', encoding='utf-8') as jsonfile:
+                json.dump(data, jsonfile, indent=2, ensure_ascii=False)
+
+    scanner = CLIScanner(args.path)
+    if not scanner.scan():
+        sys.exit(1)
+
+    count = len(scanner.findings)
+    print(f"Scan complete: {len(scanner.routes_data)} routes, {count} issue(s) found.")
+
+    if args.output:
+        if not args.file:
+            timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            if args.output == "html":
+                args.file = f"route-viewer-report-{timestamp}.html"
+            elif args.output == "csv":
+                args.file = f"route-viewer-routes-{timestamp}.csv"
+            elif args.output == "json":
+                args.file = f"route-viewer-data-{timestamp}.json"
+
+        if args.output == "html":
+            scanner.export_html(args.file)
+            print(f"HTML report saved: {args.file}")
+        elif args.output == "csv":
+            scanner.export_csv(args.file)
+            print(f"CSV exported: {args.file}")
+        elif args.output == "json":
+            scanner.export_json(args.file)
+            print(f"JSON exported: {args.file}")
+
+    if not args.scan_only:
+        # Launch GUI
+        root = tk.Tk()
+        app = LaravelRouteViewer(root)
+        app.app_path.set(args.path)
+        app.routes_data = scanner.routes_data
+        app.findings = scanner.findings
+        app.display_routes()
+        app.generate_html_report()
+        root.mainloop()
 
 
 # === RUN APP ===
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = LaravelRouteViewer(root)
-    root.mainloop()
+    if len(sys.argv) > 1:
+        cli_main()
+    else:
+        root = tk.Tk()
+        app = LaravelRouteViewer(root)
+        root.mainloop()
