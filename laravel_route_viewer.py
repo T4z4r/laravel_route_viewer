@@ -149,8 +149,9 @@ class LaravelRouteViewer:
             )
 
             if result.returncode != 0:
-                messagebox.showerror("Artisan Failed", f"Error:\n{result.stderr}")
-                self.status.config(text="Artisan command failed.")
+                self.status.config(text="Artisan failed, attempting manual crawl...")
+                self.root.update_idletasks()
+                self.manual_scan_routes(path)
                 return
 
             try:
@@ -171,6 +172,68 @@ class LaravelRouteViewer:
             messagebox.showerror("Timeout", "Artisan took too long. Check project boot.")
         except Exception as e:
             messagebox.showerror("Error", f"Unexpected error:\n{e}")
+
+    def manual_scan_routes(self, path):
+        self.status.config(text="Performing manual route crawl...")
+        self.root.update_idletasks()
+
+        routes_dir = Path(path) / "routes"
+        if not routes_dir.exists():
+            messagebox.showerror("No Routes", "No 'routes' directory found. Cannot perform manual crawl.")
+            self.status.config(text="Manual crawl failed: no routes directory.")
+            return
+
+        self.routes_data = []
+        try:
+            for route_file in routes_dir.glob("*.php"):
+                if route_file.is_file():
+                    self.parse_route_file(route_file)
+        except Exception as e:
+            messagebox.showerror("Manual Crawl Error", f"Error during manual crawl:\n{e}")
+            self.status.config(text="Manual crawl failed.")
+            return
+
+        if not self.routes_data:
+            messagebox.showwarning("No Routes", "No routes found in route files.")
+            self.status.config(text="Manual crawl found no routes.")
+            return
+
+        self.findings = self.analyze_routes(self.routes_data)
+        self.display_routes()
+        self.generate_html_report()
+        count = len(self.findings)
+        self.status.config(text=f"Manual scan complete: {len(self.routes_data)} routes, {count} issue(s) found.")
+
+    def parse_route_file(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            return
+
+        # Regex patterns for Laravel route definitions
+        import re
+
+        # Match Route::method('uri', ...) patterns
+        route_patterns = [
+            r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,",
+            r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,.*?\)\s*;",
+        ]
+
+        for pattern in route_patterns:
+            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                method, uri = match
+                # Create a basic route dict similar to artisan output
+                route = {
+                    "method": {"methods": [method.upper()]},
+                    "uri": uri,
+                    "name": "",
+                    "action": "Closure",  # Default, could be improved
+                    "middleware": []  # Default, could be improved
+                }
+                self.routes_data.append(route)
 
     def analyze_routes(self, routes):
         findings = []
