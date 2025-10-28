@@ -97,9 +97,20 @@ class LaravelRouteViewer:
             style.configure("TCheckbutton", background="#2b2b2b", foreground="#ffffff")
             style.configure("Treeview", background="#1e1e1e", foreground="#ffffff", fieldbackground="#1e1e1e")
             style.configure("Treeview.Heading", background="#3c3c3c", foreground="#ffffff")
+            style.configure("TNotebook", background="#2b2b2b")
+            style.configure("TNotebook.Tab", background="#3c3c3c", foreground="#ffffff")
+            style.map("TNotebook.Tab", background=[("selected", "#1e1e1e")])
         else:
-            style.configure("Accent.TButton", foreground="white", background="#1976d2")
+            style.configure("Accent.TButton", foreground="black", background="#1976d2")
             style.map("Accent.TButton", background=[("active", "#0d47a1")])
+            style.configure("TFrame", background="#f5f5f5")
+            style.configure("TLabel", background="#f5f5f5", foreground="#000000")
+            style.configure("TCheckbutton", background="#f5f5f5", foreground="#000000")
+            style.configure("Treeview", background="#ffffff", foreground="#000000", fieldbackground="#ffffff")
+            style.configure("Treeview.Heading", background="#f0f0f0", foreground="#000000")
+            style.configure("TNotebook", background="#f5f5f5")
+            style.configure("TNotebook.Tab", background="#e0e0e0", foreground="#000000")
+            style.map("TNotebook.Tab", background=[("selected", "#ffffff")])
 
     def setup_routes_table(self):
         columns = ("risk", "method", "uri", "name", "action", "issue")
@@ -428,6 +439,11 @@ class LaravelRouteViewer:
         bg_color = "#f5f5f5" if not self.dark_theme else "#2b2b2b"
         self.root.configure(bg=bg_color)
 
+        # Update status bar background
+        status_bg = "#e0e0e0" if not self.dark_theme else "#1e1e1e"
+        status_fg = "#000000" if not self.dark_theme else "#ffffff"
+        self.status.configure(bg=status_bg, fg=status_fg)
+
         # Update report text colors
         bg_text = "white" if not self.dark_theme else "#1e1e1e"
         fg_text = "black" if not self.dark_theme else "#ffffff"
@@ -444,6 +460,17 @@ class LaravelRouteViewer:
             self.tree.tag_configure("medium", background="#fff8e1", foreground="#ff8f00")
             self.tree.tag_configure("low", background="#e8f5e9", foreground="#2e7d32")
             self.tree.tag_configure("safe", foreground="#1b5e20")
+
+        # Update notebook tabs
+        style = ttk.Style()
+        if self.dark_theme:
+            style.configure("TNotebook", background="#2b2b2b")
+            style.configure("TNotebook.Tab", background="#3c3c3c", foreground="#ffffff")
+            style.map("TNotebook.Tab", background=[("selected", "#1e1e1e")])
+        else:
+            style.configure("TNotebook", background="#f5f5f5")
+            style.configure("TNotebook.Tab", background="#e0e0e0", foreground="#000000")
+            style.map("TNotebook.Tab", background=[("selected", "#ffffff")])
 
         # Force redraw
         self.root.update_idletasks()
@@ -796,6 +823,20 @@ def cli_main():
                         'Action': f['action'],
                         'Security Issue': f['issues']
                     })
+        
+                risky_uris = {f["route"]["uri"]: True for f in self.findings}
+                for route in self.routes_data:
+                    if route["uri"] not in risky_uris:
+                        methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
+                        action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
+                        writer.writerow({
+                            'Risk': 'OK',
+                            'Method': methods,
+                            'URI': route["uri"],
+                            'Name': route["name"] or "(none)",
+                            'Action': action,
+                            'Security Issue': '(secure)'
+                        })
 
                 risky_uris = {f["route"]["uri"]: True for f in self.findings}
                 for route in self.routes_data:

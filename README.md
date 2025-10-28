@@ -1,3 +1,4 @@
+
 # Laravel Route Viewer
 
 **List, analyze, and secure Laravel routes in a beautiful GUI with CLI support.**
