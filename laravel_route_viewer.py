@@ -39,6 +39,15 @@ class LaravelRouteViewer:
     def create_reports_dir(self):
         Path("reports").mkdir(exist_ok=True)
 
+    def get_route_methods(self, route):
+        method_data = route.get("method", {})
+        if isinstance(method_data, str):
+            return [method_data] if method_data != "HEAD" else []
+        elif isinstance(method_data, dict):
+            return [m for m in method_data.get("methods", []) if m != "HEAD"]
+        else:
+            return []
+
     def setup_ui(self):
         # === Header ===
         header = ttk.Frame(self.root, padding="15")
@@ -261,25 +270,36 @@ class LaravelRouteViewer:
         prefix_match = re.search(r"Route::prefix\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*->\s*group\s*\(\s*function\s*\(\s*\)\s*\{", content, re.IGNORECASE | re.DOTALL)
         prefix = prefix_match.group(1) if prefix_match else ""
 
-        # Match Route::method('uri', ...) patterns
-        route_patterns = [
-            r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,",
-            r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,.*?\)\s*;",
-        ]
+        # Split content into lines for better parsing
+        lines = content.split('\n')
+        route_definitions = []
 
-        for pattern in route_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-            for match in matches:
-                method, uri = match
+        # Find route definitions with their line numbers
+        for i, line in enumerate(lines):
+            # Look for Route::method calls
+            route_match = re.search(r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,", line, re.IGNORECASE)
+            if route_match:
+                method, uri = route_match.groups()
                 # Apply prefix if exists
                 full_uri = f"{prefix}/{uri}".lstrip('/') if prefix else uri
 
-                # Try to extract route name
+                # Look for ->name() in the current line and subsequent lines
                 name = ""
-                # Look for ->name('...') in the same line or nearby
-                name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content, re.IGNORECASE)
+                # Check current line first
+                name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", line, re.IGNORECASE)
                 if name_match:
                     name = name_match.group(1)
+                else:
+                    # Check next few lines for chained methods
+                    for j in range(1, min(5, len(lines) - i)):  # Look up to 5 lines ahead
+                        next_line = lines[i + j].strip()
+                        name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", next_line, re.IGNORECASE)
+                        if name_match:
+                            name = name_match.group(1)
+                            break
+                        # Stop if we hit a semicolon or another Route:: call
+                        if ';' in next_line or re.search(r"Route::", next_line):
+                            break
 
                 # Create a basic route dict similar to artisan output
                 route = {
@@ -295,7 +315,7 @@ class LaravelRouteViewer:
         findings = []
         for route in routes:
             uri = route.get("uri", "").strip()
-            methods = [m for m in route.get("method", {}).get("methods", []) if m != "HEAD"]
+            methods = self.get_route_methods(route)
             name = route.get("name", "") or "(none)"
             action = route.get("action", "") or "Closure"
             middleware = [m.lower() for m in route.get("middleware", [])]
@@ -375,7 +395,7 @@ class LaravelRouteViewer:
         risky_uris = {f["route"]["uri"]: True for f in self.findings}
         for route in self.routes_data:
             if route["uri"] not in risky_uris:
-                methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
+                methods = "|".join(self.get_route_methods(route))
                 action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
                 self.tree.insert("", "end", values=(
                     "OK", methods, route["uri"], route["name"] or "(none)", action, "(secure)"
@@ -567,19 +587,6 @@ class LaravelRouteViewer:
                 })
 
             # Write safe routes
-            risky_uris = {f["route"]["uri"]: True for f in self.findings}
-            for route in self.routes_data:
-                if route["uri"] not in risky_uris:
-                    methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
-                    action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
-                    writer.writerow({
-                        'Risk': 'OK',
-                        'Method': methods,
-                        'URI': route["uri"],
-                        'Name': route["name"] or "(none)",
-                        'Action': action,
-                        'Security Issue': '(secure)'
-                    })
 
     def export_to_json(self, filename):
         data = {
@@ -675,21 +682,36 @@ def cli_main():
             prefix_match = re.search(r"Route::prefix\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*->\s*group\s*\(\s*function\s*\(\s*\)\s*\{", content, re.IGNORECASE | re.DOTALL)
             prefix = prefix_match.group(1) if prefix_match else ""
 
-            route_patterns = [
-                r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,",
-                r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,.*?\)\s*;",
-            ]
+            # Split content into lines for better parsing
+            lines = content.split('\n')
+            route_definitions = []
 
-            for pattern in route_patterns:
-                matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-                for match in matches:
-                    method, uri = match
+            # Find route definitions with their line numbers
+            for i, line in enumerate(lines):
+                # Look for Route::method calls
+                route_match = re.search(r"Route::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]\s*,", line, re.IGNORECASE)
+                if route_match:
+                    method, uri = route_match.groups()
+                    # Apply prefix if exists
                     full_uri = f"{prefix}/{uri}".lstrip('/') if prefix else uri
 
+                    # Look for ->name() in the current line and subsequent lines
                     name = ""
-                    name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content, re.IGNORECASE)
+                    # Check current line first
+                    name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", line, re.IGNORECASE)
                     if name_match:
                         name = name_match.group(1)
+                    else:
+                        # Check next few lines for chained methods
+                        for j in range(1, min(5, len(lines) - i)):  # Look up to 5 lines ahead
+                            next_line = lines[i + j].strip()
+                            name_match = re.search(r"->name\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", next_line, re.IGNORECASE)
+                            if name_match:
+                                name = name_match.group(1)
+                                break
+                            # Stop if we hit a semicolon or another Route:: call
+                            if ';' in next_line or re.search(r"Route::", next_line):
+                                break
 
                     route = {
                         "method": {"methods": [method.upper()]},
@@ -704,7 +726,7 @@ def cli_main():
             findings = []
             for route in routes:
                 uri = route.get("uri", "").strip()
-                methods = [m for m in route.get("method", {}).get("methods", []) if m != "HEAD"]
+                methods = self.get_route_methods(route)
                 name = route.get("name", "") or "(none)"
                 action = route.get("action", "") or "Closure"
                 middleware = [m.lower() for m in route.get("middleware", [])]
@@ -824,33 +846,6 @@ def cli_main():
                         'Security Issue': f['issues']
                     })
         
-                risky_uris = {f["route"]["uri"]: True for f in self.findings}
-                for route in self.routes_data:
-                    if route["uri"] not in risky_uris:
-                        methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
-                        action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
-                        writer.writerow({
-                            'Risk': 'OK',
-                            'Method': methods,
-                            'URI': route["uri"],
-                            'Name': route["name"] or "(none)",
-                            'Action': action,
-                            'Security Issue': '(secure)'
-                        })
-
-                risky_uris = {f["route"]["uri"]: True for f in self.findings}
-                for route in self.routes_data:
-                    if route["uri"] not in risky_uris:
-                        methods = "|".join([m for m in route["method"]["methods"] if m != "HEAD"])
-                        action = route["action"].replace("App\\", "", 1) if route["action"].startswith("App\\") else route["action"]
-                        writer.writerow({
-                            'Risk': 'OK',
-                            'Method': methods,
-                            'URI': route["uri"],
-                            'Name': route["name"] or "(none)",
-                            'Action': action,
-                            'Security Issue': '(secure)'
-                        })
 
         def export_json(self, filename):
             data = {
